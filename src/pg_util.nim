@@ -1,4 +1,5 @@
 import db_postgres, times
+from strutils import toLowerAscii
 from postgres import pqfinish, pqreset, pqstatus, CONNECTION_OK
 
 proc openDb*(uri: string): DbConn =
@@ -22,7 +23,12 @@ proc openDb*(uri: string): DbConn =
   ##
   open("", "", "", uri)
 
+proc resetDb*(db: DbConn) =
+  ## Resets the communications channel to the server
+  pqreset(db)
+
 proc closeDb*(db: DbConn) =
+  ## Close database connection
   pqfinish(db)
 
 proc isConnectionOK*(db: DbConn): bool =
@@ -73,3 +79,28 @@ proc toPgTimestamp*(dt: DateTime): string =
   ## See https://www.postgresql.org/docs/current/datatype-datetime.html
   ##
   format(dt, "yyyy-MM-dd' 'HH:mm:ss'.'fffzz")
+
+proc fromPgBool*(pgStr: string): bool =
+  ## Parse a boolean column value.  The states map as follows:
+  ##
+  ##   True - true
+  ##   False - false or null
+  ##
+  case toLowerAscii(pgStr)
+  of "t", "true", "y", "yes", "1", "on":
+    true
+  else:
+    false
+
+
+template withTx*(db: DbConn, body: untyped): untyped =
+  ## Execute code body within a single transaction.
+  ##
+  ## Commit if no errors and abort if any exception
+  ##
+  try:
+    discard startTx(db)
+    body
+    discard commitTx(db)
+  except:
+    discard abortTx(db)
