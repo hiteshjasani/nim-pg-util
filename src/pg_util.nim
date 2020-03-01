@@ -1,6 +1,36 @@
-import db_postgres, times
-from strutils import toLowerAscii
+import db_postgres, sequtils, times
+from strutils import join, toLowerAscii
 from postgres import pqfinish, pqreset, pqstatus, CONNECTION_OK
+
+type
+  Table = object
+    schema*: string
+    name*: string
+    owner*: string
+
+var
+  psGetCurrentDatabase: SqlPrepared
+  psGetCurrentUser: SqlPrepared
+  psGetCurrentSchema: SqlPrepared
+  psGetCurrentSchemas: SqlPrepared
+  psGetSearchPath: SqlPrepared
+  psListTables: SqlPrepared
+
+proc prepareStatements*(db: DbConn) =
+  psGetCurrentDatabase = prepare(db, "getCurrentDatabase",
+                                 sql("select current_database()"), 0)
+  psGetCurrentUser = prepare(db, "getCurrentUser",
+                             sql("select current_user"), 0)
+  psGetCurrentSchema = prepare(db, "getCurrentSchema",
+                               sql("select current_schema"), 0)
+  psGetCurrentSchemas = prepare(db, "getCurrentSchemas",
+                                sql("select current_schemas($1)"), 1)
+  psGetSearchPath = prepare(db, "getSearchPath",
+                            sql("show search_path"), 0)
+  psListTables = prepare(db, "listTables",
+                         sql("""
+select schemaname,tablename,tableowner
+  from pg_catalog.pg_tables"""), 0)
 
 proc openDb*(uri: string): DbConn =
   ## Open database using a single URI with parameters
@@ -21,7 +51,8 @@ proc openDb*(uri: string): DbConn =
   ## See Section 33.1.1 Connection Strings
   ##   https://www.postgresql.org/docs/current/libpq-connect.html
   ##
-  open("", "", "", uri)
+  result = open("", "", "", uri)
+  prepareStatements(result)
 
 proc resetDb*(db: DbConn) =
   ## Resets the communications channel to the server
@@ -104,3 +135,50 @@ template withTx*(db: DbConn, body: untyped): untyped =
     discard commitTx(db)
   except:
     discard abortTx(db)
+
+proc currentDatabase*(db: DbConn): string =
+  getValue(db, psGetCurrentDatabase)
+
+proc currentUser*(db: DbConn): string =
+  getValue(db, psGetCurrentUser)
+
+proc currentSchema*(db: DbConn): string =
+  getValue(db, psGetCurrentSchema)
+
+proc currentSchemas*(db: DbConn, includeSystemSchemas: bool): string =
+  getValue(db, psGetCurrentSchemas, includeSystemSchemas)
+
+proc schemaSearchPath*(db: DbConn): seq[string] =
+  ## Postgres default search_path
+  ##    "$user", public
+  ##
+  let val = getValue(db, psGetSearchPath)
+  result = strutils.split(val, ",")
+
+proc setSchemaSearchPath*(db: DbConn, schemas: seq[string]): bool =
+  ## Set the schema search path.
+  ##
+  ## Postgres uses a default search path of "$user",public
+  ##
+  ## Be careful when setting this as you have access to more or fewer
+  ## tables than you expect.
+  ##
+  ## WARNING: Do NOT call this function with any user data as it is
+  ## NOT protected against sql injection!
+  ##
+  # FIXME: This should be a prepared statement but the same syntax
+  # won't compile.  But noone should let any user data be passed down
+  # to this function unless they are a glutton for punishment and
+  # pain.
+  let path = join(schemas, ",")
+  tryExec(db, sql("set search_path to " & path))
+
+proc toTable(row: Row): Table =
+  result.schema = row[0]
+  result.name = row[1]
+  result.owner = row[2]
+
+proc tables*(db: DbConn): seq[Table] =
+  ## List tables accessible to the current user
+  let rows = getAllRows(db, psListTables)
+  map(rows, toTable)
