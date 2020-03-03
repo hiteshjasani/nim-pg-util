@@ -3,7 +3,7 @@ from strutils import join, toLowerAscii
 from postgres import pqfinish, pqreset, pqstatus, CONNECTION_OK
 
 type
-  Table = object
+  Table* = object
     schema*: string
     name*: string
     owner*: string
@@ -14,6 +14,7 @@ var
   psGetCurrentSchema: SqlPrepared
   psGetCurrentSchemas: SqlPrepared
   psGetSearchPath: SqlPrepared
+  psListSchemas: SqlPrepared
   psListTables: SqlPrepared
 
 proc prepareStatements*(db: DbConn) =
@@ -27,6 +28,10 @@ proc prepareStatements*(db: DbConn) =
                                 sql("select current_schemas($1)"), 1)
   psGetSearchPath = prepare(db, "getSearchPath",
                             sql("show search_path"), 0)
+  psListSchemas = prepare(db, "listSchemas",
+                          sql("""
+select nspname
+  from pg_catalog.pg_namespace"""), 0)
   psListTables = prepare(db, "listTables",
                          sql("""
 select schemaname,tablename,tableowner
@@ -173,6 +178,38 @@ proc setSchemaSearchPath*(db: DbConn, schemas: seq[string]): bool =
   let path = join(schemas, ",")
   tryExec(db, sql("set search_path to " & path))
 
+proc schemas*(db: DbConn): seq[string] =
+  let rows = getAllRows(db, psListSchemas)
+  map(rows, proc(row: Row): string = row[0])
+
+proc createSchema*(db: DbConn, schema: string): bool =
+  ## Create a new schema.
+  ##
+  ## WARNING: Do NOT call this function with any user data as it is
+  ## NOT protected against sql injection!
+  ##
+  # FIXME: This should be a prepared statement but the same syntax
+  # won't compile.  But noone should let any user data be passed down
+  # to this function unless they are a glutton for punishment and
+  # pain.
+  tryExec(db, sql("create schema " & schema))
+
+proc deleteSchema*(db: DbConn, schema: string, cascade: bool = false): bool =
+  ## Delete the schema
+  ##
+  ## Specify cascade = true if you want to drop all contained objects
+  ##
+  ## WARNING: Do NOT call this function with any user data as it is
+  ## NOT protected against sql injection!
+  ##
+  # FIXME: This should be a prepared statement but the same syntax
+  # won't compile.  But noone should let any user data be passed down
+  # to this function unless they are a glutton for punishment and
+  # pain.
+  let stat = if cascade: "drop schema " & schema & " cascade"
+             else: "drop schema " & schema
+  tryExec(db, sql(stat))
+
 proc toTable(row: Row): Table =
   result.schema = row[0]
   result.name = row[1]
@@ -182,3 +219,6 @@ proc tables*(db: DbConn): seq[Table] =
   ## List tables accessible to the current user
   let rows = getAllRows(db, psListTables)
   map(rows, toTable)
+
+proc deleteTable*(db: DbConn, tableName: string): bool =
+  tryExec(db, sql("delete table " & tableName))
